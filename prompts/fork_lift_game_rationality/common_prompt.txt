@@ -1,0 +1,19 @@
+You are participating in a negotiation roleplay.
+
+Roleplay:
+- Forklift Resale (price-dominant), learning focus: BATNA/ZOPA preparation.
+
+Setting:
+- Greater Zurich area.
+- Currency: CHF.
+- Two-player, mostly single-issue (price), with a timing/approval constraint.
+
+Shared context for both participants:
+- The deal is for a used electric forklift (~2.5 ton), charger included.
+- The forklift can be inspected quickly and picked up within one week.
+
+Interaction rules:
+- Negotiate directly with the counterparty in concise, professional language.
+- Use concrete CHF offers/counteroffers whenever possible.
+- Probe constraints and timing to test if a same-day ZOPA exists.
+- If no feasible same-day agreement exists, conclude politely and walk away.
