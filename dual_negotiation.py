@@ -1,16 +1,16 @@
 """
-Run a negotiation between two model personas.
-
-All configuration lives in this file.
+Run a two-agent negotiation using prompt templates and per-player variable files.
 """
 
 from __future__ import annotations
 
 import os
 import random
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List
+
 from openai import OpenAI
 
 # =====================
@@ -18,22 +18,18 @@ from openai import OpenAI
 # =====================
 ENV_FILE = ".env.local"
 
-MODEL_A = "gpt-4.1-mini"
-MODEL_B = "gpt-4.1-mini"
+MODEL_A = "gpt-4.1"
+MODEL_B = "gpt-4.1"
 
-NUM_ROUNDS = 6
+NUM_ROUNDS = 12
 TEMPERATURE = 0.8
 TOPIC = "Forklift resale in Greater Zurich area (price-dominant; currency CHF)."
 
-# Select prompt set folder inside `prompts/`.
-# Example: "fork_lift_game_basic" or "fork_lift_game_rationality"
-PROMPT_SET = "fork_lift_game_rationality"
-
-PROMPTS_ROOT = Path("prompts")
-PROMPT_SET_DIR = PROMPTS_ROOT / PROMPT_SET
-COMMON_PROMPT_FILE = PROMPT_SET_DIR / "common_prompt.txt"
-PROMPT_A_FILE = PROMPT_SET_DIR / "seller_prompt.txt"
-PROMPT_B_FILE = PROMPT_SET_DIR / "buyer_prompt.txt"
+PROMPTS_DIR = Path("prompts/fork_lift_game")
+PLAYER_1_PROMPT_FILE = PROMPTS_DIR / "Player_1_prompt.txt"
+PLAYER_2_PROMPT_FILE = PROMPTS_DIR / "Player_2_prompt.txt"
+PLAYER_1_VARS_FILE = PROMPTS_DIR / "Player_1_prompt.vars"
+PLAYER_2_VARS_FILE = PROMPTS_DIR / "Player_2_prompt.vars"
 
 SETTINGS_ASSIGNMENT_TEMPLATE = """Before we begin negotiating, the user wants to know
 your agent settings for this run.
@@ -43,21 +39,21 @@ levels. You do not choose them. They are fixed and define your behavior:
 irrationality_level: {irrationality_level}
 win_orientation_level: {win_orientation_level}
 trust_level: {trust_level}
+deal_need_level: {deal_need_level}
 
 Behavior directives for this run:
 - irrationality directive: {irrationality_directive}
 - win-orientation directive: {win_orientation_directive}
 - trust directive: {trust_directive}
+- deal-need directive: {deal_need_directive}
 
 Execution requirements:
 - Apply these directives consistently in every message.
 - Keep respecting your role constraints and hard limits from the scenario.
 - Let trust influence tone, disclosure, and concession behavior."""
 
-
 Message = Dict[str, str]
 AgentSettings = Dict[str, str]
-
 
 IRRATIONALITY_LEVELS = [
     "insanely irrational",
@@ -68,29 +64,6 @@ IRRATIONALITY_LEVELS = [
     "very rational",
     "insanely rational",
 ]
-
-WIN_ORIENTATION_LEVELS = [
-    "you do not care if you win or lose",
-    "you slightly prefer winning, but losing is acceptable",
-    "you somewhat want to win, but can still compromise",
-    "you are balanced between winning and reaching a feasible deal",
-    "you strongly want to win and prioritize your own outcome",
-    "you very strongly need to win and resist compromise",
-    "you have to win",
-]
-
-TRUST_LEVELS = [
-    "you trust nothing; everything they say is a lie",
-    "you trust almost nothing and assume deception unless proven otherwise",
-    "you are skeptical and verify most claims",
-    "you are neutral and require moderate evidence",
-    "you are somewhat trusting and accept many claims in good faith",
-    "you are very trusting and rarely challenge claims",
-    "anything they tell you is a fact",
-]
-
-SEED_MIN = 0
-SEED_MAX = 2**63 - 1
 
 IRRATIONALITY_DIRECTIVES = {
     "insanely irrational": (
@@ -124,35 +97,37 @@ IRRATIONALITY_DIRECTIVES = {
 }
 
 WIN_ORIENTATION_DIRECTIVES = {
-    "you do not care if you win or lose": (
-        "focus on feasibility and completion over personal advantage; accept "
-        "balanced outcomes with minimal resistance"
+    "Zero-Sum Closer (Win-Lose)": (
+        "Treat every concession as weakness and focus on maximizing your share. "
+        "Use pressure, anchoring, and brinkmanship to win the deal."
     ),
-    "you slightly prefer winning, but losing is acceptable": (
-        "seek mild advantage but concede quickly when needed to preserve a "
-        "workable agreement"
+    "Hard Trader (Mostly Win-Lose)": (
+        "Prioritize strong outcomes but avoid pure scorched-earth tactics. "
+        "Collaborate tactically when useful, otherwise stay positional."
     ),
-    "you somewhat want to win, but can still compromise": (
-        "pursue gains while remaining flexible; trade concessions when they "
-        "improve chance of closure"
+    "Pragmatic Splitter (Balanced / Deal-First)": (
+        "Optimize for agreement and efficiency over dominance. "
+        "Concede strategically to keep momentum and reduce risk."
     ),
-    "you are balanced between winning and reaching a feasible deal": (
-        "equally weight self-interest and deal completion; push where justified "
-        "and reciprocate fairly"
+    "Value Builder (Mostly Win-Win)": (
+        "Look for trades that expand value while protecting core interests. "
+        "Be transparent about constraints and flexible on structure."
     ),
-    "you strongly want to win and prioritize your own outcome": (
-        "aggressively protect your side; concede only with clear return value "
-        "or strong strategic reason"
-    ),
-    "you very strongly need to win and resist compromise": (
-        "treat concessions as costly; escalate demands and only move when "
-        "facing concrete risk of breakdown"
-    ),
-    "you have to win": (
-        "prioritize dominance of outcome above relationship and joint value; "
-        "concede minimally and only under hard constraints"
+    "Partnership Architect (Win-Win)": (
+        "Treat negotiation as long-term relationship design. "
+        "Co-create durable options and prioritize shared success metrics."
     ),
 }
+
+TRUST_LEVELS = [
+    "you trust nothing; everything they say is a lie",
+    "you trust almost nothing and assume deception unless proven otherwise",
+    "you are skeptical and verify most claims",
+    "you are neutral and require moderate evidence",
+    "you are somewhat trusting and accept many claims in good faith",
+    "you are very trusting and rarely challenge claims",
+    "anything they tell you is a fact",
+]
 
 TRUST_DIRECTIVES = {
     "you trust nothing; everything they say is a lie": (
@@ -185,57 +160,96 @@ TRUST_DIRECTIVES = {
     ),
 }
 
+DEAL_NEED_DIRECTIVES = {
+    "Casual Browser (Nice-to-have)": (
+        "Treat the deal as optional and stay relaxed about timing and terms. "
+        "Walk away quickly if it is not clean and clearly advantageous."
+    ),
+    "Selective Improver (Useful upgrade)": (
+        "Want the deal if it meaningfully helps, but avoid prolonged friction. "
+        "Exit if negotiation costs rise too much."
+    ),
+    "Committed Optimizer (Strong preference)": (
+        "Aim to make it work through several revisions if needed. "
+        "Keep a clear walk-away threshold and do not force a bad deal."
+    ),
+    "Deadline Driver (High urgency)": (
+        "Need closure on timeline and actively drive the process forward. "
+        "Offer targeted concessions to remove blockers."
+    ),
+    "Existential Closer (Must-close / Career-risk)": (
+        "Treat failure as catastrophic and prioritize signature speed. "
+        "Accept imperfection, but do not violate explicit hard constraints."
+    ),
+}
+
+WIN_ORIENTATION_LEVELS = list(WIN_ORIENTATION_DIRECTIVES.keys())
+DEAL_NEED_LEVELS = list(DEAL_NEED_DIRECTIVES.keys())
+
+SEED_MIN = 0
+SEED_MAX = 2**63 - 1
+
 
 def load_dotenv_file(path: str) -> None:
     env_path = Path(path)
     if not env_path.exists():
         return
-
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if (
-            len(value) >= 2
-            and value[0] == value[-1]
-            and value[0] in {"'", '"'}
-        ):
-            value = value[1:-1]
-        # Keep real environment values if already set.
-        os.environ.setdefault(key, value)
+        value = value.strip().strip("'").strip('"')
+        if key:
+            os.environ.setdefault(key, value)
 
 
 def load_text_file(path: Path, label: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"{label} file not found: {path}")
-    prompt = path.read_text(encoding="utf-8").strip()
-    if not prompt:
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
         raise ValueError(f"{label} file is empty: {path}")
-    return prompt
+    return text
 
 
-def combine_system_prompt(common_prompt: str, role_prompt: str) -> str:
-    return f"{common_prompt}\n\n{role_prompt}"
+def load_vars_file(path: Path, label: str) -> Dict[str, str]:
+    if not path.exists():
+        raise FileNotFoundError(f"{label} file not found: {path}")
+    out: Dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"Invalid line in {path}: {raw_line}")
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip()
+    return out
 
 
-def generate_reply(
-    client,
-    model: str,
-    history: List[Message],
-    temperature: float,
-) -> str:
+def render_template(text: str, variables: Dict[str, str], label: str) -> str:
+    pattern = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+
+    missing = {m.group(1) for m in pattern.finditer(text) if m.group(1) not in variables}
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(f"Missing template vars in {label}: {missing_list}")
+
+    rendered = text
+    for key, value in variables.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    return rendered
+
+
+def generate_reply(client: OpenAI, model: str, history: List[Message], temperature: float) -> str:
     response = client.chat.completions.create(
         model=model,
         messages=history,
         temperature=temperature,
     )
-    content = response.choices[0].message.content
-    return (content or "").strip()
+    return (response.choices[0].message.content or "").strip()
 
 
 def sample_agent_settings(rng: random.Random) -> AgentSettings:
@@ -243,20 +257,8 @@ def sample_agent_settings(rng: random.Random) -> AgentSettings:
         "irrationality_level": rng.choice(IRRATIONALITY_LEVELS),
         "win_orientation_level": rng.choice(WIN_ORIENTATION_LEVELS),
         "trust_level": rng.choice(TRUST_LEVELS),
+        "deal_need_level": rng.choice(DEAL_NEED_LEVELS),
     }
-
-
-def format_settings_lines(settings: AgentSettings) -> str:
-    return (
-        f"irrationality_level: {settings['irrationality_level']}\n"
-        f"win_orientation_level: {settings['win_orientation_level']}\n"
-        f"trust_level: {settings['trust_level']}\n"
-        f"irrationality_directive: "
-        f"{IRRATIONALITY_DIRECTIVES[settings['irrationality_level']]}\n"
-        f"win_orientation_directive: "
-        f"{WIN_ORIENTATION_DIRECTIVES[settings['win_orientation_level']]}\n"
-        f"trust_directive: {TRUST_DIRECTIVES[settings['trust_level']]}"
-    )
 
 
 def sample_distinct_agent_seeds() -> tuple[int, int]:
@@ -268,18 +270,29 @@ def sample_distinct_agent_seeds() -> tuple[int, int]:
     return seed_a, seed_b
 
 
+def format_settings_lines(settings: AgentSettings) -> str:
+    return (
+        f"irrationality_level: {settings['irrationality_level']}\n"
+        f"win_orientation_level: {settings['win_orientation_level']}\n"
+        f"trust_level: {settings['trust_level']}\n"
+        f"deal_need_level: {settings['deal_need_level']}\n"
+        f"irrationality_directive: {IRRATIONALITY_DIRECTIVES[settings['irrationality_level']]}\n"
+        f"win_orientation_directive: {WIN_ORIENTATION_DIRECTIVES[settings['win_orientation_level']]}\n"
+        f"trust_directive: {TRUST_DIRECTIVES[settings['trust_level']]}\n"
+        f"deal_need_directive: {DEAL_NEED_DIRECTIVES[settings['deal_need_level']]}"
+    )
+
+
 def build_settings_assignment_message(settings: AgentSettings) -> str:
     return SETTINGS_ASSIGNMENT_TEMPLATE.format(
         irrationality_level=settings["irrationality_level"],
         win_orientation_level=settings["win_orientation_level"],
         trust_level=settings["trust_level"],
-        irrationality_directive=IRRATIONALITY_DIRECTIVES[
-            settings["irrationality_level"]
-        ],
-        win_orientation_directive=WIN_ORIENTATION_DIRECTIVES[
-            settings["win_orientation_level"]
-        ],
+        deal_need_level=settings["deal_need_level"],
+        irrationality_directive=IRRATIONALITY_DIRECTIVES[settings["irrationality_level"]],
+        win_orientation_directive=WIN_ORIENTATION_DIRECTIVES[settings["win_orientation_level"]],
         trust_directive=TRUST_DIRECTIVES[settings["trust_level"]],
+        deal_need_directive=DEAL_NEED_DIRECTIVES[settings["deal_need_level"]],
     )
 
 
@@ -290,12 +303,7 @@ def assign_and_print_agent_settings(
     settings: AgentSettings,
     seed: int,
 ) -> None:
-    history.append(
-        {
-            "role": "user",
-            "content": build_settings_assignment_message(settings),
-        }
-    )
+    history.append({"role": "user", "content": build_settings_assignment_message(settings)})
     print(
         f"\nAssigned settings - {agent_label} ({model}) [seed={seed}]:\n"
         f"{format_settings_lines(settings)}"
@@ -303,7 +311,7 @@ def assign_and_print_agent_settings(
 
 
 def run_negotiation(
-    client,
+    client: OpenAI,
     model_a: str,
     model_b: str,
     prompt_a: str,
@@ -316,31 +324,13 @@ def run_negotiation(
     history_b: List[Message] = [{"role": "system", "content": prompt_b}]
 
     seed_a, seed_b = sample_distinct_agent_seeds()
-    rng_a = random.Random(seed_a)
-    rng_b = random.Random(seed_b)
+    settings_a = sample_agent_settings(random.Random(seed_a))
+    settings_b = sample_agent_settings(random.Random(seed_b))
 
-    settings_a = sample_agent_settings(rng_a)
-    settings_b = sample_agent_settings(rng_b)
+    assign_and_print_agent_settings(history_a, "Agent A", model_a, settings_a, seed_a)
+    assign_and_print_agent_settings(history_b, "Agent B", model_b, settings_b, seed_b)
 
-    assign_and_print_agent_settings(
-        history=history_a,
-        agent_label="Agent A",
-        model=model_a,
-        settings=settings_a,
-        seed=seed_a,
-    )
-    assign_and_print_agent_settings(
-        history=history_b,
-        agent_label="Agent B",
-        model=model_b,
-        settings=settings_b,
-        seed=seed_b,
-    )
-
-    latest_from_b = (
-        f"Negotiation topic: {topic}\n"
-        "Start the conversation with your opening proposal."
-    )
+    latest_from_b = f"Negotiation topic: {topic}\nStart the conversation with your opening proposal."
 
     for round_idx in range(1, rounds + 1):
         history_a.append({"role": "user", "content": latest_from_b})
@@ -354,9 +344,7 @@ def run_negotiation(
         history_b.append({"role": "assistant", "content": message_b})
         print(f"\nRound {round_idx} - Agent B ({model_b}):\n{message_b}")
 
-        latest_from_b = (
-            f"Counterparty says:\n{message_b}\nRespond with your best next move."
-        )
+        latest_from_b = f"Counterparty says:\n{message_b}\nRespond with your best next move."
 
 
 def main() -> int:
@@ -368,33 +356,24 @@ def main() -> int:
         return 1
 
     load_dotenv_file(ENV_FILE)
-
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        print(
-            f"Missing OPENAI_API_KEY. Set it in {ENV_FILE} or environment.",
-            file=sys.stderr,
-        )
+        print(f"Missing OPENAI_API_KEY. Set it in {ENV_FILE} or environment.", file=sys.stderr)
         return 1
 
     try:
-        common_prompt = load_text_file(COMMON_PROMPT_FILE, "Common prompt")
-        prompt_a = combine_system_prompt(
-            common_prompt,
-            load_text_file(PROMPT_A_FILE, "Agent A prompt"),
-        )
-        prompt_b = combine_system_prompt(
-            common_prompt,
-            load_text_file(PROMPT_B_FILE, "Agent B prompt"),
-        )
+        prompt_1_template = load_text_file(PLAYER_1_PROMPT_FILE, "Player 1 prompt")
+        prompt_2_template = load_text_file(PLAYER_2_PROMPT_FILE, "Player 2 prompt")
+        vars_1 = load_vars_file(PLAYER_1_VARS_FILE, "Player 1 vars")
+        vars_2 = load_vars_file(PLAYER_2_VARS_FILE, "Player 2 vars")
+        prompt_a = render_template(prompt_1_template, vars_1, "Player 1 prompt")
+        prompt_b = render_template(prompt_2_template, vars_2, "Player 2 prompt")
     except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    client = OpenAI(api_key=api_key)
-
     run_negotiation(
-        client=client,
+        client=OpenAI(api_key=api_key),
         model_a=MODEL_A,
         model_b=MODEL_B,
         prompt_a=prompt_a,
