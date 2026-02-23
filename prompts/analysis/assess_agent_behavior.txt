@@ -1,0 +1,26 @@
+Evaluate only {{AGENT_LABEL}} in this transcript.
+
+Classify behavior strictly using these options:
+
+irrationality_level options:
+{{IRRATIONALITY_OPTIONS}}
+
+win_orientation_level options:
+{{WIN_ORIENTATION_OPTIONS}}
+
+trust_level options:
+{{TRUST_OPTIONS}}
+
+deal_need_level options:
+{{DEAL_NEED_OPTIONS}}
+
+For each confidence field, use exactly one of:
+- very_low
+- low
+- balanced
+- high
+- very_high
+Use only transcript evidence. The initial hidden configuration was not provided.
+
+Transcript:
+{{TRANSCRIPT_TEXT}}

@@ -1,0 +1,112 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "agent": {
+      "type": "string",
+      "enum": [
+        "__AGENT_LABEL__"
+      ]
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "irrationality_level": {
+          "type": "string",
+          "enum": [
+            "__IRRATIONALITY_LEVELS__"
+          ]
+        },
+        "win_orientation_level": {
+          "type": "string",
+          "enum": [
+            "__WIN_ORIENTATION_LEVELS__"
+          ]
+        },
+        "trust_level": {
+          "type": "string",
+          "enum": [
+            "__TRUST_LEVELS__"
+          ]
+        },
+        "deal_need_level": {
+          "type": "string",
+          "enum": [
+            "__DEAL_NEED_LEVELS__"
+          ]
+        }
+      },
+      "required": [
+        "irrationality_level",
+        "win_orientation_level",
+        "trust_level",
+        "deal_need_level"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "irrationality_level": {
+          "type": "string",
+          "enum": [
+            "very_low",
+            "low",
+            "balanced",
+            "high",
+            "very_high"
+          ]
+        },
+        "win_orientation_level": {
+          "type": "string",
+          "enum": [
+            "very_low",
+            "low",
+            "balanced",
+            "high",
+            "very_high"
+          ]
+        },
+        "trust_level": {
+          "type": "string",
+          "enum": [
+            "very_low",
+            "low",
+            "balanced",
+            "high",
+            "very_high"
+          ]
+        },
+        "deal_need_level": {
+          "type": "string",
+          "enum": [
+            "very_low",
+            "low",
+            "balanced",
+            "high",
+            "very_high"
+          ]
+        }
+      },
+      "required": [
+        "irrationality_level",
+        "win_orientation_level",
+        "trust_level",
+        "deal_need_level"
+      ]
+    }
+  },
+  "required": [
+    "agent",
+    "classification",
+    "evidence",
+    "confidence"
+  ]
+}

@@ -1,0 +1,18 @@
+Before we begin negotiating, the user wants to know your agent settings for this run.
+
+The system sampled these values uniformly at random from predefined behavior levels. You do not choose them. They are fixed and define your behavior:
+irrationality_level: {irrationality_level}
+win_orientation_level: {win_orientation_level}
+trust_level: {trust_level}
+deal_need_level: {deal_need_level}
+
+Behavior directives for this run:
+- irrationality directive: {irrationality_directive}
+- win-orientation directive: {win_orientation_directive}
+- trust directive: {trust_directive}
+- deal-need directive: {deal_need_directive}
+
+Execution requirements:
+- Apply these directives consistently in every message.
+- Keep respecting your role constraints and hard limits from the scenario.
+- Let trust influence tone, disclosure, and concession behavior.

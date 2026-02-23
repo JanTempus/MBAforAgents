@@ -1,0 +1,64 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "deal_status": {
+      "type": "string",
+      "enum": [
+        "deal_reached",
+        "no_deal",
+        "unclear"
+      ]
+    },
+    "final_terms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "price_chf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "other_terms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "price_chf",
+        "other_terms",
+        "summary"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    }
+  },
+  "required": [
+    "deal_status",
+    "final_terms",
+    "evidence",
+    "confidence"
+  ]
+}

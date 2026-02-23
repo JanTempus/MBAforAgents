@@ -8,8 +8,10 @@ import os
 import random
 import re
 import sys
+import json
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Tuple
 
 from openai import OpenAI
 
@@ -18,8 +20,8 @@ from openai import OpenAI
 # =====================
 ENV_FILE = ".env.local"
 
-MODEL_A = "gpt-4.1"
-MODEL_B = "gpt-4.1"
+MODEL_A = "gpt-4.1-mini"
+MODEL_B = "gpt-4.1-mini"
 
 NUM_ROUNDS = 12
 TEMPERATURE = 0.8
@@ -30,165 +32,44 @@ PLAYER_1_PROMPT_FILE = PROMPTS_DIR / "Player_1_prompt.txt"
 PLAYER_2_PROMPT_FILE = PROMPTS_DIR / "Player_2_prompt.txt"
 PLAYER_1_VARS_FILE = PROMPTS_DIR / "Player_1_prompt.vars"
 PLAYER_2_VARS_FILE = PROMPTS_DIR / "Player_2_prompt.vars"
+ANALYSIS_PROMPTS_DIR = Path("prompts/analysis")
+EXTRACT_FINAL_DEAL_PROMPT_FILE = ANALYSIS_PROMPTS_DIR / "extract_final_deal.txt"
+ASSESS_AGENT_BEHAVIOR_PROMPT_FILE = ANALYSIS_PROMPTS_DIR / "assess_agent_behavior.txt"
 
-SETTINGS_ASSIGNMENT_TEMPLATE = """Before we begin negotiating, the user wants to know
-your agent settings for this run.
+AGENT_SETTINGS_DIR = Path("prompts/agent_settings")
+SETTINGS_ASSIGNMENT_TEMPLATE_FILE = AGENT_SETTINGS_DIR / "settings_assignment_template.txt"
 
-The system sampled these values uniformly at random from predefined behavior
-levels. You do not choose them. They are fixed and define your behavior:
-irrationality_level: {irrationality_level}
-win_orientation_level: {win_orientation_level}
-trust_level: {trust_level}
-deal_need_level: {deal_need_level}
+DIRECTIVES_DIR = Path("directives")
+IRRATIONALITY_DIRECTIVES_FILE = DIRECTIVES_DIR / "irrationality.json"
+WIN_ORIENTATION_DIRECTIVES_FILE = DIRECTIVES_DIR / "win_orientation.json"
+TRUST_DIRECTIVES_FILE = DIRECTIVES_DIR / "trust.json"
+DEAL_NEED_DIRECTIVES_FILE = DIRECTIVES_DIR / "deal_need.json"
 
-Behavior directives for this run:
-- irrationality directive: {irrationality_directive}
-- win-orientation directive: {win_orientation_directive}
-- trust directive: {trust_directive}
-- deal-need directive: {deal_need_directive}
+STRUCTURED_OUTPUTS_DIR = Path("structured_outputs")
+FINAL_DEAL_SCHEMA_FILE = STRUCTURED_OUTPUTS_DIR / "final_deal_extraction.schema.json"
+BEHAVIOR_SCHEMA_FILE = STRUCTURED_OUTPUTS_DIR / "behavior_assessment.schema.json"
 
-Execution requirements:
-- Apply these directives consistently in every message.
-- Keep respecting your role constraints and hard limits from the scenario.
-- Let trust influence tone, disclosure, and concession behavior."""
+OUTPUT_DIR = Path("outputs")
+
+ANALYSIS_MODEL = "gpt-4.1"
+ANALYSIS_TEMPERATURE = 0.0
 
 Message = Dict[str, str]
 AgentSettings = Dict[str, str]
+SETTINGS_ASSIGNMENT_TEMPLATE = ""
 
-IRRATIONALITY_LEVELS = [
-    "insanely irrational",
-    "very irrational",
-    "somewhat irrational",
-    "neither irrational nor rational",
-    "somewhat rational",
-    "very rational",
-    "insanely rational",
-]
+IRRATIONALITY_DIRECTIVES: Dict[str, str] = {}
+WIN_ORIENTATION_DIRECTIVES: Dict[str, str] = {}
+TRUST_DIRECTIVES: Dict[str, str] = {}
+DEAL_NEED_DIRECTIVES: Dict[str, str] = {}
 
-IRRATIONALITY_DIRECTIVES = {
-    "insanely irrational": (
-        "make impulsive, inconsistent moves; overreact to small provocations; "
-        "occasionally reject clearly good offers or accept poor ones"
-    ),
-    "very irrational": (
-        "frequently misread the situation; make emotion-driven concessions or "
-        "demands; show weak internal consistency"
-    ),
-    "somewhat irrational": (
-        "mostly follow logic but sometimes make ego-driven detours, minor "
-        "miscalculations, and occasional overreactions"
-    ),
-    "neither irrational nor rational": (
-        "mix logic and emotion evenly; sometimes quantify carefully, sometimes "
-        "go with instinct without full justification"
-    ),
-    "somewhat rational": (
-        "usually reason from constraints and incentives, but still allow small "
-        "emotional bias in close decisions"
-    ),
-    "very rational": (
-        "be consistent and calculation-driven; prioritize BATNA/ZOPA logic and "
-        "avoid emotional swings"
-    ),
-    "insanely rational": (
-        "be maximally systematic and internally consistent; use strict decision "
-        "logic, explicit tradeoffs, and zero ego reactions"
-    ),
-}
-
-WIN_ORIENTATION_DIRECTIVES = {
-    "Zero-Sum Closer (Win-Lose)": (
-        "Treat every concession as weakness and focus on maximizing your share. "
-        "Use pressure, anchoring, and brinkmanship to win the deal."
-    ),
-    "Hard Trader (Mostly Win-Lose)": (
-        "Prioritize strong outcomes but avoid pure scorched-earth tactics. "
-        "Collaborate tactically when useful, otherwise stay positional."
-    ),
-    "Pragmatic Splitter (Balanced / Deal-First)": (
-        "Optimize for agreement and efficiency over dominance. "
-        "Concede strategically to keep momentum and reduce risk."
-    ),
-    "Value Builder (Mostly Win-Win)": (
-        "Look for trades that expand value while protecting core interests. "
-        "Be transparent about constraints and flexible on structure."
-    ),
-    "Partnership Architect (Win-Win)": (
-        "Treat negotiation as long-term relationship design. "
-        "Co-create durable options and prioritize shared success metrics."
-    ),
-}
-
-TRUST_LEVELS = [
-    "you trust nothing; everything they say is a lie",
-    "you trust almost nothing and assume deception unless proven otherwise",
-    "you are skeptical and verify most claims",
-    "you are neutral and require moderate evidence",
-    "you are somewhat trusting and accept many claims in good faith",
-    "you are very trusting and rarely challenge claims",
-    "anything they tell you is a fact",
-]
-
-TRUST_DIRECTIVES = {
-    "you trust nothing; everything they say is a lie": (
-        "assume deception by default; challenge nearly every claim and require "
-        "strong verification before adjusting position"
-    ),
-    "you trust almost nothing and assume deception unless proven otherwise": (
-        "default to skepticism; verify most statements and delay concessions "
-        "until credibility is established"
-    ),
-    "you are skeptical and verify most claims": (
-        "request supporting rationale frequently; accept some claims cautiously "
-        "after limited cross-checking"
-    ),
-    "you are neutral and require moderate evidence": (
-        "neither distrust nor over-trust; update belief with moderate evidence "
-        "and consistent behavior"
-    ),
-    "you are somewhat trusting and accept many claims in good faith": (
-        "assume mostly good faith; verify only higher-stakes claims and keep "
-        "a collaborative tone"
-    ),
-    "you are very trusting and rarely challenge claims": (
-        "treat most statements as credible; prioritize momentum and alignment "
-        "over extensive verification"
-    ),
-    "anything they tell you is a fact": (
-        "accept counterpart statements as true unless impossible; adapt quickly "
-        "to their framing with minimal challenge"
-    ),
-}
-
-DEAL_NEED_DIRECTIVES = {
-    "Casual Browser (Nice-to-have)": (
-        "Treat the deal as optional and stay relaxed about timing and terms. "
-        "Walk away quickly if it is not clean and clearly advantageous."
-    ),
-    "Selective Improver (Useful upgrade)": (
-        "Want the deal if it meaningfully helps, but avoid prolonged friction. "
-        "Exit if negotiation costs rise too much."
-    ),
-    "Committed Optimizer (Strong preference)": (
-        "Aim to make it work through several revisions if needed. "
-        "Keep a clear walk-away threshold and do not force a bad deal."
-    ),
-    "Deadline Driver (High urgency)": (
-        "Need closure on timeline and actively drive the process forward. "
-        "Offer targeted concessions to remove blockers."
-    ),
-    "Existential Closer (Must-close / Career-risk)": (
-        "Treat failure as catastrophic and prioritize signature speed. "
-        "Accept imperfection, but do not violate explicit hard constraints."
-    ),
-}
-
-WIN_ORIENTATION_LEVELS = list(WIN_ORIENTATION_DIRECTIVES.keys())
-DEAL_NEED_LEVELS = list(DEAL_NEED_DIRECTIVES.keys())
+IRRATIONALITY_LEVELS: List[str] = []
+WIN_ORIENTATION_LEVELS: List[str] = []
+TRUST_LEVELS: List[str] = []
+DEAL_NEED_LEVELS: List[str] = []
 
 SEED_MIN = 0
 SEED_MAX = 2**63 - 1
-
 
 def load_dotenv_file(path: str) -> None:
     env_path = Path(path)
@@ -229,6 +110,73 @@ def load_vars_file(path: Path, label: str) -> Dict[str, str]:
     return out
 
 
+def load_directives_file(path: Path, label: str) -> Dict[str, str]:
+    text = load_text_file(path, label)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"{label} must be a non-empty JSON object: {path}")
+
+    directives: Dict[str, str] = {}
+    for raw_key, raw_value in data.items():
+        if not isinstance(raw_key, str) or not raw_key.strip():
+            raise ValueError(f"{label} has an invalid empty/non-string key in {path}")
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise ValueError(f"{label} has an invalid empty/non-string value for '{raw_key}' in {path}")
+        directives[raw_key] = raw_value
+    return directives
+
+
+def load_runtime_assets() -> None:
+    global SETTINGS_ASSIGNMENT_TEMPLATE
+    global IRRATIONALITY_DIRECTIVES
+    global WIN_ORIENTATION_DIRECTIVES
+    global TRUST_DIRECTIVES
+    global DEAL_NEED_DIRECTIVES
+    global IRRATIONALITY_LEVELS
+    global WIN_ORIENTATION_LEVELS
+    global TRUST_LEVELS
+    global DEAL_NEED_LEVELS
+
+    SETTINGS_ASSIGNMENT_TEMPLATE = load_text_file(
+        SETTINGS_ASSIGNMENT_TEMPLATE_FILE,
+        "Settings assignment template",
+    )
+
+    IRRATIONALITY_DIRECTIVES = load_directives_file(
+        IRRATIONALITY_DIRECTIVES_FILE,
+        "Irrationality directives",
+    )
+    WIN_ORIENTATION_DIRECTIVES = load_directives_file(
+        WIN_ORIENTATION_DIRECTIVES_FILE,
+        "Win orientation directives",
+    )
+    TRUST_DIRECTIVES = load_directives_file(
+        TRUST_DIRECTIVES_FILE,
+        "Trust directives",
+    )
+    DEAL_NEED_DIRECTIVES = load_directives_file(
+        DEAL_NEED_DIRECTIVES_FILE,
+        "Deal need directives",
+    )
+
+    IRRATIONALITY_LEVELS = list(IRRATIONALITY_DIRECTIVES.keys())
+    WIN_ORIENTATION_LEVELS = list(WIN_ORIENTATION_DIRECTIVES.keys())
+    TRUST_LEVELS = list(TRUST_DIRECTIVES.keys())
+    DEAL_NEED_LEVELS = list(DEAL_NEED_DIRECTIVES.keys())
+
+    if not IRRATIONALITY_LEVELS:
+        raise ValueError("No irrationality levels loaded from directives.")
+    if not WIN_ORIENTATION_LEVELS:
+        raise ValueError("No win orientation levels loaded from directives.")
+    if not TRUST_LEVELS:
+        raise ValueError("No trust levels loaded from directives.")
+    if not DEAL_NEED_LEVELS:
+        raise ValueError("No deal need levels loaded from directives.")
+
+
 def render_template(text: str, variables: Dict[str, str], label: str) -> str:
     pattern = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
 
@@ -243,6 +191,47 @@ def render_template(text: str, variables: Dict[str, str], label: str) -> str:
     return rendered
 
 
+def format_options_for_prompt(options: List[str]) -> str:
+    return "\n".join(f"- {opt}" for opt in options)
+
+
+def format_run_timestamp(timestamp: datetime) -> str:
+    return timestamp.strftime("%M,%H,%d,%m,%Y")
+
+
+def deep_replace_schema_tokens(node: Any, replacements: Dict[str, Any]) -> Any:
+    if isinstance(node, dict):
+        return {k: deep_replace_schema_tokens(v, replacements) for k, v in node.items()}
+    if isinstance(node, list):
+        if len(node) == 1 and isinstance(node[0], str) and node[0] in replacements:
+            replacement = replacements[node[0]]
+            if isinstance(replacement, list):
+                return replacement
+        return [deep_replace_schema_tokens(item, replacements) for item in node]
+    if isinstance(node, str) and node in replacements:
+        replacement = replacements[node]
+        if isinstance(replacement, str):
+            return replacement
+    return node
+
+
+def load_structured_schema(
+    path: Path,
+    label: str,
+    replacements: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    text = load_text_file(path, label)
+    try:
+        schema = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
+    if not isinstance(schema, dict):
+        raise ValueError(f"{path} must contain a JSON object schema.")
+    if replacements:
+        schema = deep_replace_schema_tokens(schema, replacements)
+    return schema
+
+
 def generate_reply(client: OpenAI, model: str, history: List[Message], temperature: float) -> str:
     response = client.chat.completions.create(
         model=model,
@@ -250,6 +239,39 @@ def generate_reply(client: OpenAI, model: str, history: List[Message], temperatu
         temperature=temperature,
     )
     return (response.choices[0].message.content or "").strip()
+
+
+def generate_structured_reply(
+    client: OpenAI,
+    model: str,
+    history: List[Message],
+    temperature: float,
+    schema_name: str,
+    schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    response = client.chat.completions.create(
+        model=model,
+        messages=history,
+        temperature=temperature,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+        },
+    )
+    content = (response.choices[0].message.content or "").strip()
+    if not content:
+        raise ValueError("Model returned empty JSON content.")
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Model returned invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Model JSON response must be an object.")
+    return data
 
 
 def sample_agent_settings(rng: random.Random) -> AgentSettings:
@@ -296,18 +318,193 @@ def build_settings_assignment_message(settings: AgentSettings) -> str:
     )
 
 
-def assign_and_print_agent_settings(
+def assign_agent_settings(
     history: List[Message],
-    agent_label: str,
-    model: str,
     settings: AgentSettings,
-    seed: int,
 ) -> None:
     history.append({"role": "user", "content": build_settings_assignment_message(settings)})
-    print(
-        f"\nAssigned settings - {agent_label} ({model}) [seed={seed}]:\n"
-        f"{format_settings_lines(settings)}"
+
+
+def build_transcript_text(
+    rounds_data: List[Tuple[int, str, str, str]],
+) -> str:
+    lines: List[str] = []
+    for round_idx, agent_label, model, message in rounds_data:
+        lines.append(f"Round {round_idx} | {agent_label} ({model}):")
+        lines.append(message)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def build_behavior_assessment_schema(agent_label: str) -> Dict[str, Any]:
+    return load_structured_schema(
+        path=BEHAVIOR_SCHEMA_FILE,
+        label="Behavior assessment schema",
+        replacements={
+            "__AGENT_LABEL__": agent_label,
+            "__IRRATIONALITY_LEVELS__": IRRATIONALITY_LEVELS,
+            "__WIN_ORIENTATION_LEVELS__": WIN_ORIENTATION_LEVELS,
+            "__TRUST_LEVELS__": TRUST_LEVELS,
+            "__DEAL_NEED_LEVELS__": DEAL_NEED_LEVELS,
+        },
     )
+
+
+def extract_final_deal(client: OpenAI, transcript_text: str) -> Dict[str, Any]:
+    prompt_template = load_text_file(
+        EXTRACT_FINAL_DEAL_PROMPT_FILE,
+        "Extract final deal prompt",
+    )
+    user_prompt = render_template(
+        prompt_template,
+        {"TRANSCRIPT_TEXT": transcript_text},
+        "Extract final deal prompt",
+    )
+    history: List[Message] = [
+        {
+            "role": "system",
+            "content": (
+                "You extract negotiation outcomes from transcripts. "
+                "Return only data that matches the provided structured output schema."
+            ),
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+    return generate_structured_reply(
+        client=client,
+        model=ANALYSIS_MODEL,
+        history=history,
+        temperature=ANALYSIS_TEMPERATURE,
+        schema_name="final_deal_extraction",
+        schema=load_structured_schema(
+            FINAL_DEAL_SCHEMA_FILE,
+            "Final deal extraction schema",
+        ),
+    )
+
+
+def assess_agent_behavior(
+    client: OpenAI,
+    transcript_text: str,
+    agent_label: str,
+) -> Dict[str, Any]:
+    prompt_template = load_text_file(
+        ASSESS_AGENT_BEHAVIOR_PROMPT_FILE,
+        "Assess agent behavior prompt",
+    )
+    user_prompt = render_template(
+        prompt_template,
+        {
+            "AGENT_LABEL": agent_label,
+            "IRRATIONALITY_OPTIONS": format_options_for_prompt(IRRATIONALITY_LEVELS),
+            "WIN_ORIENTATION_OPTIONS": format_options_for_prompt(WIN_ORIENTATION_LEVELS),
+            "TRUST_OPTIONS": format_options_for_prompt(TRUST_LEVELS),
+            "DEAL_NEED_OPTIONS": format_options_for_prompt(DEAL_NEED_LEVELS),
+            "TRANSCRIPT_TEXT": transcript_text,
+        },
+        "Assess agent behavior prompt",
+    )
+    history: List[Message] = [
+        {
+            "role": "system",
+            "content": (
+                "You are an impartial evaluator. Judge observable behavior only. "
+                "Do not assume hidden configuration values. "
+                "Return only data that matches the provided structured output schema."
+            ),
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+    return generate_structured_reply(
+        client=client,
+        model=ANALYSIS_MODEL,
+        history=history,
+        temperature=ANALYSIS_TEMPERATURE,
+        schema_name=f"behavior_assessment_{agent_label.lower().replace(' ', '_')}",
+        schema=build_behavior_assessment_schema(agent_label),
+    )
+
+
+def write_settings_markdown(
+    path: Path,
+    run_timestamp: str,
+    topic: str,
+    rounds: int,
+    model_a: str,
+    model_b: str,
+    seed_a: int,
+    seed_b: int,
+    settings_a: AgentSettings,
+    settings_b: AgentSettings,
+) -> None:
+    content = (
+        "# Negotiation Settings\n\n"
+        f"- Timestamp (Minute,hour,day,month,year): {run_timestamp}\n"
+        f"- Topic: {topic}\n"
+        f"- Rounds: {rounds}\n"
+        f"- Agent A model: {model_a}\n"
+        f"- Agent B model: {model_b}\n\n"
+        "## Agent A\n\n"
+        f"- Seed: {seed_a}\n\n"
+        "```text\n"
+        f"{format_settings_lines(settings_a)}\n"
+        "```\n\n"
+        "## Agent B\n\n"
+        f"- Seed: {seed_b}\n\n"
+        "```text\n"
+        f"{format_settings_lines(settings_b)}\n"
+        "```\n"
+    )
+    path.write_text(content, encoding="utf-8")
+
+
+def write_transcript_markdown(
+    path: Path,
+    run_timestamp: str,
+    topic: str,
+    rounds_data: List[Tuple[int, str, str, str]],
+    final_deal_json: Dict[str, Any],
+    agent_a_eval_json: Dict[str, Any],
+    agent_b_eval_json: Dict[str, Any],
+) -> None:
+    lines: List[str] = [
+        "# Negotiation Transcript",
+        "",
+        f"- Timestamp (Minute,hour,day,month,year): {run_timestamp}",
+        f"- Topic: {topic}",
+        "",
+        "## Discussion",
+        "",
+    ]
+    for round_idx, agent_label, model, message in rounds_data:
+        lines.append(f"### Round {round_idx} - {agent_label} ({model})")
+        lines.append("")
+        lines.append(message)
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Final Deal Extraction",
+            "",
+            "```json",
+            json.dumps(final_deal_json, indent=2),
+            "```",
+            "",
+            "## Behavior Assessment: Agent A",
+            "",
+            "```json",
+            json.dumps(agent_a_eval_json, indent=2),
+            "```",
+            "",
+            "## Behavior Assessment: Agent B",
+            "",
+            "```json",
+            json.dumps(agent_b_eval_json, indent=2),
+            "```",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def run_negotiation(
@@ -319,16 +516,17 @@ def run_negotiation(
     topic: str,
     rounds: int,
     temperature: float,
-) -> None:
+) -> Dict[str, object]:
     history_a: List[Message] = [{"role": "system", "content": prompt_a}]
     history_b: List[Message] = [{"role": "system", "content": prompt_b}]
+    rounds_data: List[Tuple[int, str, str, str]] = []
 
     seed_a, seed_b = sample_distinct_agent_seeds()
     settings_a = sample_agent_settings(random.Random(seed_a))
     settings_b = sample_agent_settings(random.Random(seed_b))
 
-    assign_and_print_agent_settings(history_a, "Agent A", model_a, settings_a, seed_a)
-    assign_and_print_agent_settings(history_b, "Agent B", model_b, settings_b, seed_b)
+    assign_agent_settings(history_a, settings_a)
+    assign_agent_settings(history_b, settings_b)
 
     latest_from_b = f"Negotiation topic: {topic}\nStart the conversation with your opening proposal."
 
@@ -336,15 +534,31 @@ def run_negotiation(
         history_a.append({"role": "user", "content": latest_from_b})
         message_a = generate_reply(client, model_a, history_a, temperature)
         history_a.append({"role": "assistant", "content": message_a})
-        print(f"\nRound {round_idx} - Agent A ({model_a}):\n{message_a}")
+        rounds_data.append((round_idx, "Agent A", model_a, message_a))
 
         to_b = f"Counterparty says:\n{message_a}\nRespond with your best next move."
         history_b.append({"role": "user", "content": to_b})
         message_b = generate_reply(client, model_b, history_b, temperature)
         history_b.append({"role": "assistant", "content": message_b})
-        print(f"\nRound {round_idx} - Agent B ({model_b}):\n{message_b}")
+        rounds_data.append((round_idx, "Agent B", model_b, message_b))
 
         latest_from_b = f"Counterparty says:\n{message_b}\nRespond with your best next move."
+
+    transcript_text = build_transcript_text(rounds_data)
+    final_deal_json = extract_final_deal(client, transcript_text)
+    agent_a_eval_json = assess_agent_behavior(client, transcript_text, "Agent A")
+    agent_b_eval_json = assess_agent_behavior(client, transcript_text, "Agent B")
+
+    return {
+        "seed_a": seed_a,
+        "seed_b": seed_b,
+        "settings_a": settings_a,
+        "settings_b": settings_b,
+        "rounds_data": rounds_data,
+        "final_deal_json": final_deal_json,
+        "agent_a_eval_json": agent_a_eval_json,
+        "agent_b_eval_json": agent_b_eval_json,
+    }
 
 
 def main() -> int:
@@ -362,6 +576,7 @@ def main() -> int:
         return 1
 
     try:
+        load_runtime_assets()
         prompt_1_template = load_text_file(PLAYER_1_PROMPT_FILE, "Player 1 prompt")
         prompt_2_template = load_text_file(PLAYER_2_PROMPT_FILE, "Player 2 prompt")
         vars_1 = load_vars_file(PLAYER_1_VARS_FILE, "Player 1 vars")
@@ -372,7 +587,9 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    run_negotiation(
+    run_timestamp = format_run_timestamp(datetime.now())
+
+    result = run_negotiation(
         client=OpenAI(api_key=api_key),
         model_a=MODEL_A,
         model_b=MODEL_B,
@@ -382,6 +599,37 @@ def main() -> int:
         rounds=NUM_ROUNDS,
         temperature=TEMPERATURE,
     )
+
+    run_output_dir = OUTPUT_DIR / run_timestamp
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+    settings_md_file = run_output_dir / "settings.md"
+    transcript_md_file = run_output_dir / "transcript.md"
+    write_settings_markdown(
+        path=settings_md_file,
+        run_timestamp=run_timestamp,
+        topic=TOPIC,
+        rounds=NUM_ROUNDS,
+        model_a=MODEL_A,
+        model_b=MODEL_B,
+        seed_a=int(result["seed_a"]),
+        seed_b=int(result["seed_b"]),
+        settings_a=result["settings_a"],  # type: ignore[arg-type]
+        settings_b=result["settings_b"],  # type: ignore[arg-type]
+    )
+    write_transcript_markdown(
+        path=transcript_md_file,
+        run_timestamp=run_timestamp,
+        topic=TOPIC,
+        rounds_data=result["rounds_data"],  # type: ignore[arg-type]
+        final_deal_json=result["final_deal_json"],  # type: ignore[arg-type]
+        agent_a_eval_json=result["agent_a_eval_json"],  # type: ignore[arg-type]
+        agent_b_eval_json=result["agent_b_eval_json"],  # type: ignore[arg-type]
+    )
+
+    print(f"Timestamp (Minute,hour,day,month,year): {run_timestamp}")
+    print(f"Run folder: {run_output_dir}")
+    print(f"Settings written to: {settings_md_file}")
+    print(f"Transcript written to: {transcript_md_file}")
     return 0
 
 

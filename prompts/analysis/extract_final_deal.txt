@@ -1,0 +1,9 @@
+Based only on this transcript, identify the final deal outcome.
+
+Rules:
+- Use only transcript evidence.
+- If no deal was reached, set `deal_status` to `no_deal` and `price_chf` to null.
+- Keep `evidence` short and specific.
+
+Transcript:
+{{TRANSCRIPT_TEXT}}

@@ -1,0 +1,9 @@
+{
+  "you trust nothing; everything they say is a lie": "assume deception by default; challenge nearly every claim and require strong verification before adjusting position",
+  "you trust almost nothing and assume deception unless proven otherwise": "default to skepticism; verify most statements and delay concessions until credibility is established",
+  "you are skeptical and verify most claims": "request supporting rationale frequently; accept some claims cautiously after limited cross-checking",
+  "you are neutral and require moderate evidence": "neither distrust nor over-trust; update belief with moderate evidence and consistent behavior",
+  "you are somewhat trusting and accept many claims in good faith": "assume mostly good faith; verify only higher-stakes claims and keep a collaborative tone",
+  "you are very trusting and rarely challenge claims": "treat most statements as credible; prioritize momentum and alignment over extensive verification",
+  "anything they tell you is a fact": "accept counterpart statements as true unless impossible; adapt quickly to their framing with minimal challenge"
+}
